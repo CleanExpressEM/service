@@ -5,6 +5,14 @@ import Anular from "../models/anular.js";
 import Pagos from "../models/pagos.js";
 import { handleGetInfoUser } from "../routes/cuadreDiario.js";
 
+// Función genérica para mapear IDs a objetos usando una clave de identificación
+export function mapByKey(array, key) {
+  return array.reduce((map, obj) => {
+    map[obj[key]] = obj;
+    return map;
+  }, {});
+}
+
 export const handleGetInfoDelivery = async () => {
   try {
     // Consulta a la colección categorias
