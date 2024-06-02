@@ -7,18 +7,24 @@ import moment from "moment";
 import { openingHours } from "../middleware/middleware.js";
 import Pagos from "../models/pagos.js";
 import Usuario from "../models/usuarios/usuarios.js";
-import { mapByKey } from "../utils/utilsFuncion.js";
+import { mapObjectByKey } from "../utils/utilsFuncion.js";
 const router = express.Router();
 
 export const handleGetInfoUser = async (id) => {
-  const iUser = await Usuario.findById(id).lean();
+  try {
+    // Seleccionar solo los campos necesarios del usuario
+    const iUser = await Usuario.findById(id).select("name usuario rol").lean();
 
-  return {
-    _id: iUser._id,
-    name: iUser.name,
-    usuario: iUser.usuario,
-    rol: iUser.rol,
-  };
+    return {
+      _id: iUser._id,
+      name: iUser.name,
+      usuario: iUser.usuario,
+      rol: iUser.rol,
+    };
+  } catch (error) {
+    console.error("Error al obtener la información del usuario:", error);
+    throw error; // Propagar el error para que sea manejado por el llamador
+  }
 };
 
 router.post("/save-cuadre", openingHours, async (req, res) => {
@@ -39,8 +45,7 @@ router.post("/save-cuadre", openingHours, async (req, res) => {
     const newCuadre = new CuadreDiario({ ...infoCuadre, index: newIndex });
 
     // Guarda el nuevo cuadre en la base de datos
-    const cuadreSavedDocument = await newCuadre.save();
-    const cuadreSaved = cuadreSavedDocument.toObject();
+    await newCuadre.save();
 
     res.json("Guardado Exitoso");
   } catch (error) {
@@ -51,7 +56,7 @@ router.post("/save-cuadre", openingHours, async (req, res) => {
 
 router.put("/update-cuadre/:id", openingHours, async (req, res) => {
   const { id } = req.params;
-  const { infoCuadre, orders, deliverys, gastos } = req.body;
+  const { infoCuadre } = req.body;
 
   try {
     // Actualiza el cuadre en la colección CuadreDiario
@@ -68,66 +73,6 @@ router.put("/update-cuadre/:id", openingHours, async (req, res) => {
   } catch (error) {
     console.error("Error al actualizar el cuadre:", error);
     res.status(500).json({ mensaje: "Error al actualizar el cuadre" });
-  }
-});
-
-router.get("/get-cuadre/date/:dateCuadre", async (req, res) => {
-  const { dateCuadre } = req.params;
-
-  try {
-    const infoCuadres = await CuadreDiario.findOne({
-      dateCuadres: dateCuadre,
-    }).lean();
-
-    if (!infoCuadres) {
-      return res.json(null);
-    }
-
-    // Enrich 'listCuadres' with specific user information and remove 'userID'
-    const newListCuadres = await Promise.all(
-      infoCuadres.listCuadres.map(async (cuadre) => {
-        try {
-          const userInfo = await Usuario.findById(cuadre.userID);
-          const { _id, name, usuario } = userInfo;
-          return { ...cuadre, userInfo: { _id, name, usuario } };
-        } catch (error) {
-          console.error("Error al obtener información del usuario:", error);
-          return cuadre;
-        }
-      })
-    );
-
-    infoCuadres.listCuadres = newListCuadres.map(
-      ({ userID, ...cuadre }) => cuadre
-    );
-
-    res.json(infoCuadres);
-  } catch (error) {
-    console.error("Error al obtener el dato:", error);
-    res.status(500).json({ mensaje: "Error al obtener el dato" });
-  }
-});
-
-router.get("/get-cuadre/last", async (req, res) => {
-  try {
-    // 2. Encontrar el último cuadre de toda la colección.
-    let lastCuadre = await CuadreDiario.findOne().sort({ index: -1 }).lean();
-
-    if (lastCuadre) {
-      res.json({
-        ...lastCuadre,
-        infoUser: await handleGetInfoUser(lastCuadre.userID),
-        userID: undefined,
-        type: "update",
-        enable: false,
-        saved: true,
-      });
-    } else {
-      res.json(null);
-    }
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Error al obtener el cuadre." });
   }
 });
 
@@ -173,9 +118,9 @@ async function obtenerInformacionDetallada(listCuadres) {
     );
 
     // Mapear IDs de pagos, gastos y facturas a sus respectivos objetos
-    const pagosMap = mapByKey(pagos, "_id");
-    const gastosMap = mapByKey(gastos, "_id");
-    const facturasMap = mapByKey(facturas, "_id");
+    const pagosMap = mapObjectByKey(pagos, "_id");
+    const gastosMap = mapObjectByKey(gastos, "_id");
+    const facturasMap = mapObjectByKey(facturas, "_id");
 
     // Asignar información detallada a cada cuadre
     for (let cuadre of listCuadres) {
@@ -283,10 +228,12 @@ const handleGetMovimientosNCuadre = async (date, listCuadres) => {
   });
 
   // Filtrar los pagos y gastos que no están en los IDs de cuadres
-  const pagosNCuadre = listPagos.filter((pago) => !allPagosIds.has(pago._id));
+  const pagosNCuadre = listPagos.filter(
+    (pago) => !allPagosIds.has(pago._id.toString())
+  );
   const gastosNCuadre = await Promise.all(
     listGastos
-      .filter((gasto) => !allGastosIds.has(gasto._id))
+      .filter((gasto) => !allGastosIds.has(gasto._id.toString()))
       .map(async (gasto) => ({
         ...gasto,
         infoUser: UsuariosMap.get(gasto.idUser),

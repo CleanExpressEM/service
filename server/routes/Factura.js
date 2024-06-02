@@ -16,7 +16,7 @@ import Producto from "../models/portafolio/productos.js";
 
 import Pagos from "../models/pagos.js";
 
-import { handleGetInfoDelivery } from "../utils/utilsFuncion.js";
+import { handleGetInfoDelivery, mapArrayByKey } from "../utils/utilsFuncion.js";
 import { handleAddPago } from "./pagos.js";
 import { handleAddGasto } from "./gastos.js";
 import { handleGetInfoUser } from "./cuadreDiario.js";
@@ -370,13 +370,7 @@ router.get("/get-factura/date/:startDate/:endDate", async (req, res) => {
     ]);
 
     // Crear un mapa de pagos por ID de orden para un acceso más rápido
-    const pagosPorOrden = pagos.reduce((acc, pago) => {
-      if (!acc[pago.idOrden]) {
-        acc[pago.idOrden] = [];
-      }
-      acc[pago.idOrden].push(pago);
-      return acc;
-    }, {});
+    const pagosPorOrden = mapArrayByKey(pagos, "idOrden");
 
     // Procesar cada orden de factura
     const resultados = ordenes.map((orden) => ({
