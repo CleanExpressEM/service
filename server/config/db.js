@@ -1,5 +1,7 @@
 import mongoose from "mongoose";
 
+mongoose.set("debug", true); // Habilitar logs detallados
+
 export const connectDB = async () => {
   try {
     await mongoose.connect(
@@ -7,6 +9,8 @@ export const connectDB = async () => {
       {
         useNewUrlParser: true,
         useUnifiedTopology: true,
+        connectTimeoutMS: 30000,
+        socketTimeoutMS: 30000,
       }
     );
     console.log("Conexión exitosa a MongoDB");
