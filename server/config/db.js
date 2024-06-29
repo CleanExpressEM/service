@@ -10,10 +10,11 @@ export const connectDB = async () => {
       {
         useNewUrlParser: true,
         useUnifiedTopology: true,
-        connectTimeoutMS: 60000, // 60 segundos
-        socketTimeoutMS: 60000, // 60 segundos
-        serverSelectionTimeoutMS: 60000, // Tiempo de espera para seleccionar un servidor
+        connectTimeoutMS: 60000, // 60 segundos para conectar
+        socketTimeoutMS: 60000, // 60 segundos para operaciones de socket
+        serverSelectionTimeoutMS: 60000, // 60 segundos para seleccionar servidor
         heartbeatFrequencyMS: 10000, // Frecuencia del latido del corazón
+        maxTimeMS: 120000, // 120 segundos para operaciones de Mongoose
       }
     );
     console.log("Conexión exitosa a MongoDB");
