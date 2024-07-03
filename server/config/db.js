@@ -1,8 +1,5 @@
 import mongoose from "mongoose";
 
-// Habilitar logs detallados
-mongoose.set("debug", true);
-
 export const connectDB = async () => {
   try {
     await mongoose.connect(
@@ -10,19 +7,13 @@ export const connectDB = async () => {
       {
         useNewUrlParser: true,
         useUnifiedTopology: true,
-        connectTimeoutMS: 60000, // 60 segundos
-        socketTimeoutMS: 60000, // 60 segundos
-        serverSelectionTimeoutMS: 60000, // 60 segundos
-        heartbeatFrequencyMS: 10000, // Frecuencia del latido del corazón
       }
     );
     console.log("Conexión exitosa a MongoDB");
   } catch (error) {
     console.error("Error al conectar a MongoDB:", error);
-    setTimeout(connectDB, 5000); // Intentar reconectar en 5 segundos
+    process.exit(1); // Terminar el proceso con error
   }
 };
-
-connectDB();
 
 export default mongoose;
