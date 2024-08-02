@@ -8,16 +8,20 @@ import Negocio from "../models/negocio.js";
 import db from "../config/db.js";
 import moment from "moment";
 import Anular from "../models/anular.js";
-import Donacion from "../models/donacion.js";
-
+import Almacen from "../models/almacen.js";
 import Servicio from "../models/portafolio/servicios.js";
 import Producto from "../models/portafolio/productos.js";
 
 import Pagos from "../models/pagos.js";
 
-import { handleGetInfoDelivery, mapArrayByKey } from "../utils/utilsFuncion.js";
+import {
+  handleGetInfoDelivery,
+  mapArrayByKey,
+  mapObjectByKey,
+} from "../utils/utilsFuncion.js";
 import { handleAddPago } from "./pagos.js";
 import { handleAddGasto } from "./gastos.js";
+import Usuarios from "../models/usuarios/usuarios.js";
 
 const router = express.Router();
 
@@ -34,15 +38,14 @@ async function handleAddFactura(data, session) {
     direccion,
     datePrevista,
     dateEntrega,
+    dateRecojo,
     descuento,
     estado,
     dni,
     subTotal,
     totalNeto,
     cargosExtras,
-    factura,
     modeRegistro,
-    modoDescuento,
     gift_promo,
     attendedBy,
     typeRegistro,
@@ -52,15 +55,13 @@ async function handleAddFactura(data, session) {
   let newOrden;
   let newCodigo;
   let newGasto;
-  let newPago = [];
+  let newPago;
 
   const fechaActual = moment().format("YYYY-MM-DD");
   const horaActual = moment().format("HH:mm");
 
-  const beneficios = cargosExtras.beneficios;
-
   // 1. ADD CLIENTE
-  if (estado !== "reservado" && !idCliente) {
+  if (estado === "registrado" && !idCliente) {
     const nuevoCliente = new clientes({
       dni,
       nombre: Nombre,
@@ -78,19 +79,20 @@ async function handleAddFactura(data, session) {
   }
 
   // 2. UPDATE CUPON: (SI USO)
-  if (modoDescuento === "Promocion" && beneficios.promociones.length > 0) {
-    await Promise.all(
-      beneficios.promociones.map(async (cup) => {
-        const cupon = await Cupones.findOne({ codigoCupon: cup.codigoCupon });
-        if (cupon) {
-          cupon.estado = false;
-          cupon.dateUse.fecha = fechaActual;
-          cupon.dateUse.hora = horaActual;
-          await cupon.save({ session });
-        }
-        // Si cupon es null, no hace nada y continúa
-      })
-    );
+  if (
+    descuento.estado &&
+    descuento.modoDescuento === "Promocion" &&
+    descuento.info
+  ) {
+    const cupon = await Cupones.findOne({
+      codigoCupon: descuento.info.codigoCupon,
+    });
+    if (cupon) {
+      cupon.estado = false;
+      cupon.dateUse.fecha = fechaActual;
+      cupon.dateUse.hora = horaActual;
+      await cupon.save({ session });
+    }
   }
   // 3. ADD GASTO
   if (Modalidad === "Delivery") {
@@ -125,12 +127,6 @@ async function handleAddFactura(data, session) {
     }
   }
 
-  // 5. ADD FACTURA (ORDEN DE SERVICIO)
-  const nuevoIndice =
-    ((
-      await Factura.findOne({}, { index: 1, _id: 0 }).sort({ index: -1 }).lean()
-    )?.index ?? 0) + 1;
-
   const dateCreation = {
     fecha: fechaActual,
     hora: horaActual,
@@ -144,10 +140,12 @@ async function handleAddFactura(data, session) {
     nuevoCodigo = codRecibo;
   }
 
+  // 5. ADD ORDEN DE SERVICIO
   const nuevoOrden = new Factura({
     codRecibo: nuevoCodigo,
     dateCreation,
     dateRecepcion,
+    dateRecojo,
     Modalidad,
     Nombre,
     idCliente: infoCliente ? infoCliente.data._id : idCliente,
@@ -160,15 +158,12 @@ async function handleAddFactura(data, session) {
     estadoPrenda: "pendiente",
     estado,
     listPago: [],
-    index: nuevoIndice,
     dni,
     subTotal,
     totalNeto,
     cargosExtras,
-    factura,
     modeRegistro,
     notas: [],
-    modoDescuento,
     gift_promo,
     location: 1,
     attendedBy,
@@ -179,19 +174,25 @@ async function handleAddFactura(data, session) {
   newOrden = await nuevoOrden.save({ session });
   newOrden = newOrden.toObject();
 
+  let nuevoPago;
   // 6. ADD PAGO
-  let ListPago = [];
   if (infoPago) {
-    const nuevoPago = await handleAddPago({
-      ...infoPago,
-      idOrden: newOrden._id,
-    });
-
-    ListPago.push(nuevoPago);
+    nuevoPago = await handleAddPago(
+      {
+        ...infoPago,
+        idOrden: newOrden._id,
+      },
+      session
+    );
   }
 
   // 7. UPDATE CLIENTE
-  if (idCliente && modoDescuento === "Puntos" && beneficios.puntos > 0) {
+  if (
+    idCliente &&
+    descuento.estado &&
+    descuento.info &&
+    descuento.modoDescuento === "Puntos"
+  ) {
     try {
       // Buscar y actualizar el cliente si existe
       const clienteActualizado = await clientes
@@ -206,11 +207,11 @@ async function handleAddFactura(data, session) {
                   fecha: newOrden.dateRecepcion.fecha,
                   hora: newOrden.dateRecepcion.hora,
                 },
-                score: -beneficios.puntos, // los puntos en negativo
+                score: -descuento.info.puntosUsados, // los puntos en negativo
               },
             },
             $inc: {
-              scoreTotal: -beneficios.puntos, // restar los puntos del total
+              scoreTotal: -descuento.info.puntosUsados, // restar los puntos del total
             },
           },
           { new: true, session }
@@ -251,43 +252,27 @@ async function handleAddFactura(data, session) {
   }
 
   // 9. UPDATE "listPago" con los ids de los pagos en FACTURA
-  if (ListPago.length > 0) {
-    const idsPagos = ListPago.map((pago) => pago._id);
-
+  if (nuevoPago) {
     // Actualizar la newOrden con los nuevos ids de pago
-    newOrden = await Factura.findByIdAndUpdate(
+    await Factura.findByIdAndUpdate(
       newOrden._id,
-      { $addToSet: { listPago: { $each: idsPagos } } }, // Agregar los nuevos ids de pago al campo listPago
-      { new: true, session } // Opción new: true para obtener el documento actualizado
-    ).lean();
-
-    await Promise.all(
-      ListPago.map(async (pago) => {
-        const iPago = {
-          _id: pago._id,
-          idUser: pago.idUser,
-          orden: newOrden.codRecibo,
-          idOrden: pago.idOrden,
-          date: pago.date,
-          nombre: newOrden.Nombre,
-          total: pago.total,
-          metodoPago: pago.metodoPago,
-          Modalidad: newOrden.Modalidad,
-          isCounted: pago.isCounted,
-        };
-        newPago.push(iPago);
-      })
+      { $set: { listPago: [nuevoPago._id] } },
+      { session }
     );
+
+    newPago = {
+      ...nuevoPago,
+      codRecibo: newOrden.codRecibo,
+      Nombre: newOrden.Nombre,
+      Modalidad: newOrden.Modalidad,
+    };
   }
 
   return {
     newOrder: {
       ...newOrden,
-      ListPago,
-      donationDate: {
-        fecha: "",
-        hora: "",
-      },
+      listPago: newPago ? [newPago._id] : [],
+      ListPago: newPago ? [newPago] : [],
     },
     newPago,
     newGasto,
@@ -307,31 +292,18 @@ router.post("/add-factura", openingHours, async (req, res) => {
     await session.commitTransaction();
     res.json({
       newOrder,
-      ...(newPago.length > 0 && { listNewsPagos: newPago }),
+      ...(newPago && { newPago }),
       ...(newGasto && { newGasto }),
       ...(infoCliente && { changeCliente: infoCliente }),
       ...(newCodigo && { newCodigo: newCodigo.codActual }),
     });
   } catch (error) {
     console.error("Error al guardar los datos:", error);
-    if (session.inTransaction()) {
-      await session.abortTransaction();
-    }
+    await session.abortTransaction();
     res.status(500).json({ mensaje: "Error al guardar los datos" });
   } finally {
     session.endSession();
   }
-});
-
-router.get("/get-factura", (req, res) => {
-  Factura.find()
-    .then((facturas) => {
-      res.json(facturas);
-    })
-    .catch((error) => {
-      console.error("Error al obtener los datos:", error);
-      res.status(500).json({ mensaje: "Error al obtener los datos" });
-    });
 });
 
 router.get("/get-factura/:id", (req, res) => {
@@ -350,41 +322,168 @@ router.get("/get-factura/:id", (req, res) => {
     });
 });
 
-router.get("/get-factura/date/:startDate/:endDate", async (req, res) => {
+// Función para buscar facturas y procesar resultados
+const handleGetInfoDetallada = async (ordenes) => {
+  // Obtener todos los IDs de pagos y donaciones relevantes
+  const idsPagos = ordenes.flatMap((orden) => orden.listPago);
+
+  // Consultar todos los pagos
+  const pagos = await Pagos.find({ _id: { $in: idsPagos } }).lean();
+
+  // Obtener todos los IDs de usuarios únicos de los pagos
+  const idUsers = [...new Set(pagos.map((pago) => pago.idUser))];
+
+  // Buscar la información de los usuarios relacionados con los idUsers
+  const usuarios = await Usuarios.find(
+    { _id: { $in: idUsers } },
+    {
+      _id: 1,
+      name: 1,
+      usuario: 1,
+      rol: 1,
+    }
+  ).lean();
+
+  // Crear un mapa de usuarios por su _id
+  const usuariosMap = mapObjectByKey(usuarios, "_id");
+
+  // Crear un mapa de pagos por ID de orden para un acceso más rápido
+  const pagosPorOrden = mapArrayByKey(pagos, "idOrden");
+
+  // Procesar cada orden de factura
+  const resultados = ordenes.map((orden) => {
+    // Obtener los pagos asociados a la orden actual
+    const pagosAsociados = pagosPorOrden[orden._id] || [];
+
+    // Mapear cada pago asociado para agregar la información del usuario y detalles de la orden
+    const pagosConInfo = pagosAsociados.map((pago) => ({
+      infoUser: usuariosMap[pago.idUser],
+      codRecibo: orden.codRecibo,
+      Nombre: orden.Nombre,
+      Modalidad: orden.Modalidad,
+      ...pago,
+    }));
+
+    // Devolver la orden con la lista de pagos enriquecida
+    return {
+      ...orden,
+      ListPago: pagosConInfo,
+    };
+  });
+
+  return resultados;
+};
+
+router.get("/get-factura/date-range/:startDate/:endDate", async (req, res) => {
   const { startDate, endDate } = req.params;
 
   try {
     // Buscar todas las facturas dentro del rango de fechas
     const ordenes = await Factura.find({
-      "dateRecepcion.fecha": {
+      $or: [
+        { "dateCreation.fecha": { $gte: startDate, $lte: endDate } },
+        { estadoPrenda: "pendiente" },
+      ],
+    }).lean();
+
+    const infoFormateada = await handleGetInfoDetallada(ordenes);
+    res.status(200).json(infoFormateada);
+  } catch (error) {
+    console.error("Error al obtener datos: ", error);
+    res.status(500).json({ mensaje: "Error interno del servidor" });
+  }
+});
+
+router.get("/get-order/last", async (req, res) => {
+  try {
+    // Obtener solo el valor de maxConsultasDefault
+    const negocio = await Negocio.findOne(
+      {},
+      { maxConsultasDefault: 1, _id: 0 }
+    ).lean();
+
+    // Verificar si el documento de Negocio existe
+    if (!negocio) {
+      return res
+        .status(404)
+        .json({ mensaje: "No se encontró el documento de Negocio" });
+    }
+
+    const maxConsultasDefault = negocio.maxConsultasDefault;
+
+    // Obtener los últimos documentos
+    const ultimos = await Factura.find({ estado: { $ne: "preliminar" } })
+      .sort({ _id: -1 }) // Ordenar por _id en orden descendente para obtener los más recientes
+      .limit(maxConsultasDefault) // Limitar la cantidad de documentos
+      .lean();
+
+    // Obtener los IDs de los documentos obtenidos
+    const ultimosPendientesIds = ultimos
+      .filter((factura) => factura.estadoPrenda === "pendiente")
+      .map((factura) => factura._id);
+
+    // Obtener los documentos pendientes que no están en los últimos obtenidos
+    const pendientes = await Factura.find({
+      estadoPrenda: "pendiente",
+      _id: { $nin: ultimosPendientesIds }, // Excluir los IDs de los últimos documentos
+      estado: { $ne: "preliminar" },
+    }).lean();
+
+    // Combinar ambos conjuntos de documentos
+    const ordenes = [...pendientes, ...ultimos];
+
+    // Formatear la información detallada
+    const infoFormateada = await handleGetInfoDetallada(ordenes);
+
+    // Enviar respuesta exitosa
+    res.status(200).json(infoFormateada);
+  } catch (error) {
+    console.error("Error al obtener datos: ", error);
+    res.status(500).json({ mensaje: "Error interno del servidor" });
+  }
+});
+
+router.get("/get-order/preliminar", async (req, res) => {
+  try {
+    // Obtener los últimos documentos
+    const preliminares = await Factura.find({
+      estado: "preliminar",
+      estadoPrenda: { $ne: "anulado" },
+    }).lean();
+
+    // Formatear la información detallada
+    const infoFormateada = await handleGetInfoDetallada(preliminares);
+
+    // Enviar respuesta exitosa
+    res.status(200).json(infoFormateada);
+  } catch (error) {
+    console.error("Error al obtener datos: ", error);
+    res.status(500).json({ mensaje: "Error interno del servidor" });
+  }
+});
+
+router.get("/get-factura/date/:date", async (req, res) => {
+  const { date } = req.params;
+
+  // Obtener el primer y último día del mes de la fecha proporcionada
+  const startDate = moment(date, "YYYY-MM-DD")
+    .startOf("month")
+    .format("YYYY-MM-DD");
+  const endDate = moment(startDate, "YYYY-MM-DD")
+    .endOf("month")
+    .format("YYYY-MM-DD");
+
+  try {
+    // Buscar todas las facturas que coincidan exactamente con la fecha
+    const ordenes = await Factura.find({
+      "dateCreation.fecha": {
         $gte: startDate,
         $lte: endDate,
       },
     }).lean();
 
-    // Obtener todos los IDs de pagos y donaciones relevantes
-    const idsPagos = ordenes.flatMap((orden) => orden.listPago);
-    const idsDonaciones = ordenes.map((orden) => orden._id);
-
-    // Consultar todos los pagos y donaciones relevantes
-    const [pagos, donaciones] = await Promise.all([
-      Pagos.find({ _id: { $in: idsPagos } }).lean(),
-      Donacion.find({ serviceOrder: { $in: idsDonaciones } }).lean(),
-    ]);
-
-    // Crear un mapa de pagos por ID de orden para un acceso más rápido
-    const pagosPorOrden = mapArrayByKey(pagos, "idOrden");
-
-    // Procesar cada orden de factura
-    const resultados = ordenes.map((orden) => ({
-      ...orden,
-      ListPago: pagosPorOrden[orden._id] || [],
-      donationDate: donaciones.find((donado) =>
-        donado.serviceOrder.includes(orden._id.toString())
-      )?.donationDate || { fecha: "", hora: "" },
-    }));
-
-    res.status(200).json(resultados);
+    const infoFormateada = await handleGetInfoDetallada(ordenes);
+    res.status(200).json(infoFormateada);
   } catch (error) {
     console.error("Error al obtener datos: ", error);
     res.status(500).json({ mensaje: "Error interno del servidor" });
@@ -578,25 +677,24 @@ router.put(
         subTotal,
         totalNeto,
         cargosExtras,
-        factura,
-        modoDescuento,
         gift_promo,
         attendedBy,
       } = infoOrden;
 
       let infoCliente;
-      let orderUpdated;
-      let newPago = [];
+      let newPago;
 
       const fechaActual = moment().format("YYYY-MM-DD");
       const horaActual = moment().format("HH:mm");
 
-      const beneficios = cargosExtras.beneficios;
-
       // 1. ADD O UPDATE CLIENTE
       if (idCliente) {
         // SI USO PUNTOS ACTUALIZAR RESTANDO SCORE
-        if (modoDescuento === "Puntos" && beneficios.puntos > 0) {
+        if (
+          descuento.modoDescuento === "Puntos" &&
+          descuento.info?.puntosUsados > 0 &&
+          descuento.estado
+        ) {
           const clienteActualizado = await clientes
             .findByIdAndUpdate(
               idCliente,
@@ -609,11 +707,11 @@ router.put(
                       fecha: dateRecepcion.fecha,
                       hora: dateRecepcion.hora,
                     },
-                    score: -beneficios.puntos, // los puntos en negativo
+                    score: -descuento.info?.puntosUsados, // los puntos en negativo
                   },
                 },
                 $inc: {
-                  scoreTotal: -beneficios.puntos, // restar los puntos del total
+                  scoreTotal: -descuento.info?.puntosUsados, // restar los puntos del total
                 },
               },
               { new: true, session }
@@ -672,50 +770,43 @@ router.put(
       }
 
       // 3. UPDATE CUPON: (SI USO)
-      if (modoDescuento === "Promocion" && beneficios.promociones.length > 0) {
-        await Promise.all(
-          beneficios.promociones.map(async (cup) => {
-            const cupon = await Cupones.findOne({
-              codigoCupon: cup.codigoCupon,
-            }).session(session);
+      if (
+        descuento.modoDescuento === "Promocion" &&
+        descuento.info &&
+        descuento.estado
+      ) {
+        const cupon = await Cupones.findOne({
+          codigoCupon: descuento.info?.codigoCupon,
+        }).session(session);
 
-            if (cupon) {
-              cupon.estado = false;
-              cupon.dateUse.fecha = fechaActual;
-              cupon.dateUse.hora = horaActual;
-              await cupon.save({ session });
-            }
-          })
-        );
+        if (cupon) {
+          cupon.estado = false;
+          cupon.dateUse.fecha = fechaActual;
+          cupon.dateUse.hora = horaActual;
+          await cupon.save({ session });
+        }
       }
 
       // 4. ADD PAGO
-      let ListPago = []; // Info de Pagos con informacion completa
-      let listPago = []; // Info de IDs de Pagos
 
+      let nuevoPago;
       if (infoPago) {
-        const nuevoPago = await handleAddPago({
-          ...infoPago,
-          idOrden: facturaId,
-        });
-
-        ListPago.push(nuevoPago);
+        nuevoPago = await handleAddPago(
+          {
+            ...infoPago,
+            idOrden: facturaId,
+          },
+          session
+        );
       }
 
-      if (ListPago.length > 0) {
-        newPago = ListPago.map((pago) => ({
-          _id: pago._id,
-          idUser: pago.idUser,
-          orden: codRecibo,
-          idOrden: pago.idOrden,
-          date: pago.date,
-          nombre: Nombre,
-          total: pago.total,
-          metodoPago: pago.metodoPago,
+      if (nuevoPago) {
+        newPago = {
+          ...nuevoPago,
+          codRecibo: codRecibo,
+          Nombre: Nombre,
           Modalidad: Modalidad,
-          isCounted: pago.isCounted,
-        }));
-        listPago = ListPago.map((pago) => pago._id);
+        };
       }
 
       // 5. UPDATE FACTURA (ORDEN DE SERVICIO)
@@ -729,18 +820,16 @@ router.put(
         datePrevista,
         descuento,
         estado: "registrado",
-        listPago,
+        listPago: newPago ? [newPago._id] : [],
         dni,
         subTotal,
         totalNeto,
         cargosExtras,
-        factura,
-        modoDescuento,
         gift_promo,
         attendedBy,
       };
 
-      orderUpdated = await Factura.findByIdAndUpdate(
+      const orderUpdated = await Factura.findByIdAndUpdate(
         facturaId,
         { $set: infoToUpdate },
         { new: true, session }
@@ -751,16 +840,14 @@ router.put(
       res.json({
         orderUpdated: {
           ...orderUpdated,
-          ListPago,
+          ListPago: newPago ? [newPago] : [],
         },
-        ...(newPago.length > 0 && { listNewsPagos: newPago }),
+        ...(newPago && { newPago }),
         ...(infoCliente && { changeCliente: infoCliente }),
       });
     } catch (error) {
       console.error("Error al actualizar los datos de la orden:", error);
-      if (session.inTransaction()) {
-        await session.abortTransaction();
-      }
+      await session.abortTransaction();
       res
         .status(500)
         .json({ mensaje: "Error al actualizar los datos de la orden" });
@@ -807,6 +894,7 @@ router.put("/update-factura/entregar/:id", async (req, res) => {
 
   try {
     const facturaId = req.params.id;
+    const { location } = req.body;
 
     const fechaActual = moment().format("YYYY-MM-DD");
     const horaActual = moment().format("HH:mm");
@@ -884,6 +972,10 @@ router.put("/update-factura/entregar/:id", async (req, res) => {
           mensaje: "Error al buscar o actualizar el cliente",
         });
       }
+    }
+
+    if (location === 2) {
+      await Almacen.findOneAndDelete({ idOrden: facturaId }).session(session);
     }
 
     await session.commitTransaction();
@@ -1025,15 +1117,18 @@ router.put("/update-factura/anular/:id", async (req, res) => {
         fields: {
           estadoPrenda: 1,
           idCliente: 1,
-          cargosExtras: 1,
-          modoDescuento: 1,
+          descuento: 1,
         },
       }
     );
 
     let infoCliente;
     // Eliminamos los Puntos usados
-    if (orderUpdated.modoDescuento === "Puntos") {
+    if (
+      orderUpdated.descuento.modoDescuento === "Puntos" &&
+      orderUpdated.descuento.info?.puntosUsados > 0 &&
+      orderUpdated.descuento.estado
+    ) {
       const clienteActualizado = await clientes
         .findByIdAndUpdate(
           orderUpdated.idCliente,
@@ -1042,7 +1137,7 @@ router.put("/update-factura/anular/:id", async (req, res) => {
               infoScore: { idOrdenService: facturaId },
             },
             $inc: {
-              scoreTotal: parseInt(orderUpdated.cargosExtras.beneficios.puntos),
+              scoreTotal: parseInt(orderUpdated.descuento.info?.puntosUsados),
             },
           },
           { new: true, session }
@@ -1058,18 +1153,21 @@ router.put("/update-factura/anular/:id", async (req, res) => {
       }
     }
 
-    if (orderUpdated.modoDescuento === "Promocion") {
-      await Promise.all(
-        orderUpdated.cargosExtras.beneficios.promociones.map(async (cup) => {
-          const cupon = await Cupones.findOne({ codigoCupon: cup.codigoCupon });
-          if (cupon) {
-            cupon.estado = true;
-            cupon.dateUse.fecha = "";
-            cupon.dateUse.hora = "";
-            await cupon.save({ session });
-          }
-        })
-      );
+    if (
+      orderUpdated.descuento.modoDescuento === "Promocion" &&
+      orderUpdated.descuento.info &&
+      orderUpdated.descuento.estado
+    ) {
+      const cupon = await Cupones.findOne({
+        codigoCupon: orderUpdated.descuento.info?.codigoCupon,
+      }).session(session);
+
+      if (cupon) {
+        cupon.estado = true;
+        cupon.dateUse.fecha = "";
+        cupon.dateUse.hora = "";
+        await cupon.save({ session });
+      }
     }
 
     await session.commitTransaction();
@@ -1142,15 +1240,18 @@ router.post("/anular-to-replace", async (req, res) => {
         fields: {
           estadoPrenda: 1,
           idCliente: 1,
-          cargosExtras: 1,
-          modoDescuento: 1,
+          descuento: 1,
         },
       }
     );
 
     let listChangeCliente = [];
 
-    if (orderAnulada.modoDescuento === "Puntos") {
+    if (
+      orderAnulada.descuento.modoDescuento === "Puntos" &&
+      orderAnulada.descuento.info?.puntosUsados > 0 &&
+      orderAnulada.descuento.estado
+    ) {
       const clienteActualizado = await clientes.findByIdAndUpdate(
         orderAnulada.idCliente,
         {
@@ -1158,7 +1259,7 @@ router.post("/anular-to-replace", async (req, res) => {
             infoScore: { idOrdenService: idOrden },
           },
           $inc: {
-            scoreTotal: parseInt(orderAnulada.cargosExtras.beneficios.puntos),
+            scoreTotal: parseInt(orderAnulada.descuento.info?.puntosUsados),
           },
         },
         { new: true, session }
@@ -1173,19 +1274,21 @@ router.post("/anular-to-replace", async (req, res) => {
         });
       }
     }
-    if (orderAnulada.modoDescuento === "Promocion") {
-      await Promise.all(
-        orderAnulada.cargosExtras.beneficios.promociones.map(async (cup) => {
-          const cupon = await Cupones.findOne({ codigoCupon: cup.codigoCupon });
-          if (cupon) {
-            cupon.estado = true;
-            cupon.dateUse.fecha = "";
-            cupon.dateUse.hora = "";
-            await cupon.save({ session });
-          }
-          // Si cupon es null, no hace nada y continúa
-        })
-      );
+    if (
+      orderAnulada.descuento.modoDescuento === "Promocion" &&
+      orderAnulada.descuento.info !== null &&
+      orderAnulada.descuento.estado
+    ) {
+      const cupon = await Cupones.findOne({
+        codigoCupon: orderAnulada.descuento.info?.codigoCupon,
+      }).session(session);
+
+      if (cupon) {
+        cupon.estado = true;
+        cupon.dateUse.fecha = "";
+        cupon.dateUse.hora = "";
+        await cupon.save({ session });
+      }
     }
 
     const result = await handleAddFactura(dataToNewOrden, session);
@@ -1211,13 +1314,250 @@ router.post("/anular-to-replace", async (req, res) => {
     });
   } catch (error) {
     console.error("Error al guardar los datos:", error);
-    if (session.inTransaction()) {
-      await session.abortTransaction();
-    }
+    await session.abortTransaction();
+
     res.status(500).json({ mensaje: "Error al guardar los datos" });
   } finally {
     session.endSession();
   }
 });
+
+// ACTUALIZA TODA LA INFORMACION DE LA FACTURA
+router.put("/update-factura/completa/:id", async (req, res) => {
+  const session = await db.startSession();
+  session.startTransaction();
+
+  try {
+    const facturaId = req.params.id;
+    const { infoOrden } = req.body;
+    const {
+      dateRecepcion,
+      Modalidad,
+      Nombre,
+      idCliente,
+      Items,
+      celular,
+      direccion,
+      datePrevista,
+      dateRecojo,
+      dateEntrega,
+      descuento,
+      dni,
+      subTotal,
+      totalNeto,
+      cargosExtras,
+      lastEdit,
+    } = infoOrden;
+
+    let infoCliente;
+
+    // Buscar la factura registrada
+    const orderRegistered = await Factura.findById(facturaId)
+      .session(session)
+      .select({
+        codRecibo: 1,
+        idCliente: 1,
+        descuento: 1,
+      });
+
+    if (!orderRegistered) {
+      throw new Error("Factura no encontrada.");
+    }
+
+    // Eliminamos los Puntos usados
+    if (
+      orderRegistered.idCliente &&
+      orderRegistered.descuento.modoDescuento === "Puntos" &&
+      orderRegistered.descuento.info?.puntosUsados > 0 &&
+      orderRegistered.descuento.estado
+    ) {
+      await clientes.findByIdAndUpdate(
+        orderRegistered.idCliente,
+        {
+          $pull: { infoScore: { idOrdenService: facturaId } },
+          $inc: {
+            scoreTotal: parseInt(orderRegistered.descuento.info?.puntosUsados),
+          },
+        },
+        { new: true, session }
+      );
+    }
+
+    // Revalidar Cupon usado
+    if (
+      orderRegistered.descuento.modoDescuento === "Promocion" &&
+      orderRegistered.descuento.info &&
+      orderRegistered.descuento.estado
+    ) {
+      const cupon = await Cupones.findOne({
+        codigoCupon: orderRegistered.descuento.info?.codigoCupon,
+      }).session(session);
+
+      if (cupon) {
+        cupon.estado = true;
+        cupon.dateUse.fecha = "";
+        cupon.dateUse.hora = "";
+        await cupon.save({ session });
+      }
+    }
+
+    // UPDATE CLIENTE (solo si idCliente no es vacío y diferente del actual)
+    if (idCliente && orderRegistered.idCliente !== idCliente) {
+      await clientes.findByIdAndUpdate(
+        idCliente,
+        {
+          $set: {
+            nombre: Nombre,
+            direccion,
+            phone: celular,
+          },
+        },
+        { new: true, session }
+      );
+    }
+
+    // Actualizar la factura utilizando findByIdAndUpdate
+    const infoUpdated = await Factura.findByIdAndUpdate(
+      facturaId,
+      {
+        $set: {
+          dateRecepcion,
+          Modalidad,
+          Nombre,
+          idCliente,
+          Items,
+          celular,
+          direccion,
+          datePrevista,
+          dateRecojo,
+          dateEntrega,
+          descuento,
+          dni,
+          subTotal,
+          totalNeto,
+          cargosExtras,
+          lastEdit,
+        },
+      },
+      { new: true }
+    ).session(session);
+
+    // 2. UPDATE CUPON: (SI USO)
+    if (
+      descuento.estado &&
+      descuento.modoDescuento === "Promocion" &&
+      descuento.info
+    ) {
+      const cupon = await Cupones.findOne({
+        codigoCupon: descuento.info.codigoCupon,
+      }).session(session);
+
+      const fechaActual = moment().format("YYYY-MM-DD");
+      const horaActual = moment().format("HH:mm");
+
+      if (cupon) {
+        cupon.estado = false;
+        cupon.dateUse.fecha = fechaActual;
+        cupon.dateUse.hora = horaActual;
+        await cupon.save({ session });
+      }
+    }
+
+    // UPDATE CLIENTE (si se usan puntos)
+    if (
+      idCliente &&
+      descuento.estado &&
+      descuento.info &&
+      descuento.modoDescuento === "Puntos"
+    ) {
+      try {
+        // Buscar y actualizar el cliente si existe
+        const clienteActualizado = await clientes.findByIdAndUpdate(
+          idCliente,
+          {
+            $push: {
+              infoScore: {
+                idOrdenService: facturaId,
+                codigo: orderRegistered.codRecibo,
+                dateService: {
+                  fecha: dateRecepcion.fecha,
+                  hora: dateRecepcion.hora,
+                },
+                score: -descuento.info.puntosUsados, // los puntos en negativo
+              },
+            },
+            $inc: {
+              scoreTotal: -descuento.info.puntosUsados, // restar los puntos del total
+            },
+          },
+          { new: true, session }
+        );
+
+        // Si el cliente no se encuentra, no se hace nada
+        if (!clienteActualizado) {
+          console.log("Cliente no encontrado.");
+        } else {
+          infoCliente = {
+            tipoAction: "update",
+            data: clienteActualizado,
+          };
+        }
+      } catch (error) {
+        console.error("Error al buscar o actualizar el cliente:", error);
+        throw new Error("Error al buscar o actualizar el cliente");
+      }
+    }
+
+    await session.commitTransaction();
+
+    res.json({
+      infoUpdated,
+      ...(infoCliente && { changeCliente: infoCliente }),
+    });
+  } catch (error) {
+    console.error("Error al actualizar la factura completa:", error);
+    await session.abortTransaction();
+    res.status(500).json({
+      mensaje: "Error al actualizar la factura completa",
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+// FINALIZAR ORDEN PRELIMINAR
+router.put(
+  "/update-factura/finalizar/orden-preliminar/:id",
+  async (req, res) => {
+    try {
+      const facturaId = req.params.id;
+
+      const fecha = moment().format("YYYY-MM-DD");
+      const hora = moment().format("HH:mm");
+
+      // Actualizar la factura utilizando findByIdAndUpdate
+      const infoUpdated = await Factura.findByIdAndUpdate(
+        facturaId,
+        {
+          $set: {
+            dateRecepcion: {
+              fecha,
+              hora,
+            },
+            estado: "registrado",
+          },
+        },
+        { new: true, fields: { dateRecepcion: 1, estado: 1 } } // Limitar los campos devueltos
+      );
+
+      res.json(infoUpdated);
+    } catch (error) {
+      console.error("Error al finalizar orden de recojo preliminar:", error);
+      res.status(500).json({
+        mensaje: "Error al finalizar orden de recojo preliminar",
+      });
+    }
+  }
+);
 
 export default router;

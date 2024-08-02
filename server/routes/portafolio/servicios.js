@@ -24,7 +24,10 @@ router.post("/add-servicio", (req, res) => {
   newProducto
     .save()
     .then((servicioGuardado) => {
-      res.json(servicioGuardado);
+      res.json({
+        tipoAction: "added",
+        data: servicioGuardado,
+      });
     })
     .catch((error) => {
       console.error("Error al Crear servicio:", error);
@@ -79,7 +82,10 @@ router.put("/update-servicio/:idServicio", async (req, res) => {
     );
 
     if (updatedServicio) {
-      return res.json(updatedServicio);
+      return res.json({
+        tipoAction: "updated",
+        data: updatedServicio,
+      });
     } else {
       return res.status(404).json({ mensaje: "No se encontró el servicio" });
     }
@@ -115,8 +121,10 @@ router.delete("/delete-servicio/:idServicio", async (req, res) => {
 
     if (servicioEliminado) {
       return res.json({
-        mensaje: "Servicio eliminado con éxito",
-        idServicioEliminado: servicioEliminado._id,
+        tipoAction: "deleted",
+        data: {
+          _id: servicioEliminado._id,
+        },
       });
     } else {
       return res.status(404).json({ mensaje: "Servicio no encontrado" });

@@ -30,6 +30,7 @@ router.get("/get-reporte-mensual", async (req, res) => {
         $lte: fechaFinal.format("YYYY-MM-DD"),
       },
       estadoPrenda: { $ne: "anulado" },
+      estado: { $ne: "preliminar" },
     }).lean();
 
     // Obtener los IDs de todos los pagos de las órdenes

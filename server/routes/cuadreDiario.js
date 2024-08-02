@@ -129,8 +129,8 @@ async function obtenerInformacionDetallada(listCuadres) {
         const factura = facturasMap[pago.idOrden];
         return {
           _id: pagoId,
-          orden: factura.codRecibo,
-          nombre: factura.Nombre,
+          codRecibo: factura.codRecibo,
+          Nombre: factura.Nombre,
           total: pago.total,
           metodoPago: pago.metodoPago,
           Modalidad: factura.Modalidad,
@@ -215,10 +215,10 @@ const handleGetMovimientosNCuadre = async (date, listCuadres) => {
     return {
       _id: pago._id,
       idUser: pago.idUser,
-      orden: factura ? factura.codRecibo : null,
+      codRecibo: factura ? factura.codRecibo : null,
       idOrden: pago.idOrden,
       date: pago.date,
-      nombre: factura ? factura.Nombre : null,
+      Nombre: factura ? factura.Nombre : null,
       total: pago.total,
       metodoPago: pago.metodoPago,
       Modalidad: factura ? factura.Modalidad : null,
